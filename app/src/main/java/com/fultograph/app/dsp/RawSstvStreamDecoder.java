@@ -30,6 +30,7 @@ public class RawSstvStreamDecoder {
 
     private int width = DEFAULT_WIDTH;
     private int height = DEFAULT_HEIGHT;
+    private int initialHeight = DEFAULT_HEIGHT;
     private double lineDurationMs = DEFAULT_LINE_MS;
     private int samplesPerLine;
     private int syncSamples;
@@ -59,6 +60,7 @@ public class RawSstvStreamDecoder {
     public synchronized void setConfiguration(int width, int height, double lineDurationMs) {
         this.width = width;
         this.height = height;
+        this.initialHeight = height;
         this.lineDurationMs = lineDurationMs;
 
         this.samplesPerLine = (int) Math.round(lineDurationMs * (SAMPLE_RATE / 1000.0));
@@ -74,6 +76,8 @@ public class RawSstvStreamDecoder {
     }
 
     public synchronized void clearCanvas() {
+        this.height = initialHeight;
+        this.canvasPixels = new int[width * height];
         for (int i = 0; i < canvasPixels.length; i++) {
             canvasPixels[i] = 0xFF121316; // Dark background
         }
@@ -111,10 +115,11 @@ public class RawSstvStreamDecoder {
     }
 
     public synchronized Bitmap getCanvasBitmap() {
-        if (canvasBitmap == null || canvasBitmap.getWidth() != width || canvasBitmap.getHeight() != height) {
-            canvasBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        int visibleHeight = Math.max(initialHeight, currentLine + 1);
+        if (canvasBitmap == null || canvasBitmap.getWidth() != width || canvasBitmap.getHeight() != visibleHeight) {
+            canvasBitmap = Bitmap.createBitmap(width, visibleHeight, Bitmap.Config.ARGB_8888);
         }
-        canvasBitmap.setPixels(canvasPixels, 0, width, 0, 0, width, height);
+        canvasBitmap.setPixels(canvasPixels, 0, width, 0, 0, width, visibleHeight);
         return canvasBitmap;
     }
 
@@ -134,11 +139,17 @@ public class RawSstvStreamDecoder {
             // Tone transitioned away from 1200 Hz
             if (syncToneDuration >= vSyncMinSamples) {
                 // Vertical Sync Detected (long ~22+ ms 1200 Hz pulse)
-                // Start a brand new frame at line 0!
-                currentLine = 0;
-                samplesSinceLineStart = 0;
-                syncActive = true;
+                // Start a brand new frame!
                 frameCount++;
+                if (syncActive) {
+                    // Frame boundary between consecutive frames:
+                    // Advance line to append the new frame below previous frame!
+                    advanceLine();
+                } else {
+                    currentLine = 0;
+                }
+                syncActive = true;
+                samplesSinceLineStart = 0;
                 if (listener != null) {
                     listener.onFrameSync(frameCount);
                 }
@@ -188,20 +199,14 @@ public class RawSstvStreamDecoder {
     }
 
     /**
-     * Advances to the next scanline. Wraps around when reaching canvas height.
+     * Advances to the next scanline. Continuous roll mode: appends scanlines downwards.
      */
     private void advanceLine() {
         syncActive = true;
         samplesSinceLineStart = 0;
 
         currentLine++;
-        if (currentLine >= height) {
-            currentLine = 0;
-            frameCount++;
-            if (listener != null) {
-                listener.onFrameSync(frameCount);
-            }
-        }
+        ensureCapacity(currentLine + 1);
 
         // Clear next line ahead of the scanning beam
         int nextRowStart = currentLine * width;
@@ -211,6 +216,19 @@ public class RawSstvStreamDecoder {
 
         if (listener != null) {
             listener.onScanlineRendered(currentLine, height, canvasPixels);
+        }
+    }
+
+    private void ensureCapacity(int neededLines) {
+        if (neededLines >= height) {
+            int newHeight = Math.max(neededLines + 120, height + 480);
+            int[] newPixels = new int[width * newHeight];
+            System.arraycopy(canvasPixels, 0, newPixels, 0, width * height);
+            for (int i = width * height; i < newPixels.length; i++) {
+                newPixels[i] = 0xFF121316;
+            }
+            canvasPixels = newPixels;
+            height = newHeight;
         }
     }
 

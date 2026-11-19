@@ -80,8 +80,9 @@
 
         <!-- Decoded Image Card -->
         <com.google.android.material.card.MaterialCardView
+            android:id="@+id/card_decoded_image"
             android:layout_width="match_parent"
-            android:layout_height="220dp"
+            android:layout_height="360dp"
             android:layout_marginTop="10dp"
             app:cardBackgroundColor="@color/surface_container"
             app:cardCornerRadius="16dp"
@@ -92,12 +93,22 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent">
 
-                <ImageView
-                    android:id="@+id/iv_decoded_image"
+                <androidx.core.widget.NestedScrollView
+                    android:id="@+id/scroll_decoded_image"
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
-                    android:scaleType="fitCenter"
-                    android:contentDescription="Decoded SSTV image" />
+                    android:fillViewport="true"
+                    android:scrollbars="vertical"
+                    android:nestedScrollingEnabled="true">
+
+                    <ImageView
+                        android:id="@+id/iv_decoded_image"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:adjustViewBounds="true"
+                        android:scaleType="fitCenter"
+                        android:contentDescription="Decoded SSTV image" />
+                </androidx.core.widget.NestedScrollView>
 
                 <com.google.android.material.progressindicator.LinearProgressIndicator
                     android:id="@+id/progress_decode_live"
@@ -183,6 +194,14 @@
                     android:text="36s (150ms)"
                     android:textSize="10sp" />
             </com.google.android.material.chip.ChipGroup>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_scroll_bottom"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Latest"
+                android:textSize="11sp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_clear_canvas"

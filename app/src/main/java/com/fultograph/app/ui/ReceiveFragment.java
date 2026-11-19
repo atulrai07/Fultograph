@@ -115,24 +115,36 @@ public class ReceiveFragment extends Fragment {
         binding.actvRxMode.setText(options[0], false);
 
         binding.actvRxMode.setOnItemClickListener((parent, view, position, id) -> {
+            float density = getResources().getDisplayMetrics().density;
             if (position == 0) {
                 // Auto-Detect VIS
                 isRawMode = false;
                 forcedMode = null;
                 binding.layoutRawControls.setVisibility(View.GONE);
+                binding.cardDecodedImage.getLayoutParams().height = (int) (260 * density);
+                binding.cardDecodedImage.requestLayout();
+                binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+                binding.scrollDecodedImage.scrollTo(0, 0);
                 binding.tvTelemetryMode.setText("Mode: Auto (VIS)");
             } else if (position == 1) {
-                // Raw Mode (Continuous Real-Time, No Time Limit)
+                // Raw Mode (Continuous Real-Time, No Time Limit, Long Scrollable Area)
                 isRawMode = true;
                 forcedMode = null;
                 binding.layoutRawControls.setVisibility(View.VISIBLE);
+                binding.cardDecodedImage.getLayoutParams().height = (int) (440 * density);
+                binding.cardDecodedImage.requestLayout();
+                binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_XY);
                 binding.tvTelemetryMode.setText("Mode: RAW (Real-Time • 66.7ms)");
-                binding.tvDecodeMetrics.setText("Raw Mode active: No time limit. Listening decodes in real time.");
+                binding.tvDecodeMetrics.setText("Raw Mode active: Continuous scrollable feed. No time limit.");
             } else {
                 // Specific SSTV mode
                 isRawMode = false;
                 forcedMode = SstvMode.values()[position - 2];
                 binding.layoutRawControls.setVisibility(View.GONE);
+                binding.cardDecodedImage.getLayoutParams().height = (int) (260 * density);
+                binding.cardDecodedImage.requestLayout();
+                binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+                binding.scrollDecodedImage.scrollTo(0, 0);
                 binding.tvTelemetryMode.setText("Mode: " + forcedMode.name());
             }
 
@@ -143,6 +155,12 @@ public class ReceiveFragment extends Fragment {
     }
 
     private void setupRawModeControls() {
+        // Disallow parent NestedScrollView interception while user is scrolling the decoded image
+        binding.scrollDecodedImage.setOnTouchListener((v, event) -> {
+            v.getParent().requestDisallowInterceptTouchEvent(true);
+            return false;
+        });
+
         binding.chipRaw8s.setOnClickListener(v -> {
             rawDecoder.setConfiguration(RawSstvStreamDecoder.DEFAULT_WIDTH, RawSstvStreamDecoder.DEFAULT_HEIGHT, 66.667);
             binding.tvTelemetryMode.setText("Mode: RAW (8s • 66.7ms)");
@@ -155,9 +173,14 @@ public class ReceiveFragment extends Fragment {
             if (activePcmBuffer != null) decodeOfflineBuffer(activePcmBuffer);
         });
 
+        binding.btnScrollBottom.setOnClickListener(v -> {
+            binding.scrollDecodedImage.post(() -> binding.scrollDecodedImage.fullScroll(View.FOCUS_DOWN));
+        });
+
         binding.btnClearCanvas.setOnClickListener(v -> {
             rawDecoder.clearCanvas();
             binding.ivDecodedImage.setImageBitmap(rawDecoder.getCanvasBitmap());
+            binding.scrollDecodedImage.scrollTo(0, 0);
         });
     }
 
@@ -194,8 +217,9 @@ public class ReceiveFragment extends Fragment {
                     Bitmap canvas = rawDecoder.getCanvasBitmap();
                     lastDecodedBitmap = canvas;
                     binding.ivDecodedImage.setImageBitmap(canvas);
-                    binding.tvDecodeMetrics.setText(String.format("Raw Stream: Frame %d • Line %d/%d (Live)",
-                            rawDecoder.getFrameCount() + 1, rawDecoder.getCurrentLine(), rawDecoder.getHeight()));
+                    binding.tvDecodeMetrics.setText(String.format("Raw Stream: Frame %d • Line %d (Live)",
+                            rawDecoder.getFrameCount() + 1, rawDecoder.getCurrentLine() + 1));
+                    binding.scrollDecodedImage.post(() -> binding.scrollDecodedImage.fullScroll(View.FOCUS_DOWN));
                     return;
                 }
 
@@ -353,12 +377,17 @@ public class ReceiveFragment extends Fragment {
 
                 requireActivity().runOnUiThread(() -> {
                     lastDecodedBitmap = bmp;
+                    float density = getResources().getDisplayMetrics().density;
+                    binding.cardDecodedImage.getLayoutParams().height = (int) (440 * density);
+                    binding.cardDecodedImage.requestLayout();
+                    binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_XY);
                     binding.ivDecodedImage.setImageBitmap(bmp);
                     binding.progressDecodeLive.setVisibility(View.GONE);
                     double audioSec = pcm.length / 44100.0;
-                    binding.tvDecodeMetrics.setText(String.format("Raw Mode: Decoded %.1fs in %d ms • %d frames completed",
-                            audioSec, duration, rawDecoder.getFrameCount() + 1));
+                    binding.tvDecodeMetrics.setText(String.format("Raw Mode: Decoded %.1fs in %d ms • %d frames (%d lines)",
+                            audioSec, duration, rawDecoder.getFrameCount() + 1, rawDecoder.getCurrentLine() + 1));
                     binding.tvTelemetryMode.setText("Mode: RAW (" + String.format("%.1f", rawDecoder.getLineDurationMs()) + "ms)");
+                    binding.scrollDecodedImage.post(() -> binding.scrollDecodedImage.scrollTo(0, 0));
                 });
                 return;
             }
@@ -379,12 +408,18 @@ public class ReceiveFragment extends Fragment {
 
                 requireActivity().runOnUiThread(() -> {
                     lastDecodedBitmap = bmp;
+                    float density = getResources().getDisplayMetrics().density;
+                    binding.cardDecodedImage.getLayoutParams().height = (int) (440 * density);
+                    binding.cardDecodedImage.requestLayout();
+                    binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_XY);
                     binding.ivDecodedImage.setImageBitmap(bmp);
                     binding.progressDecodeLive.setVisibility(View.GONE);
+                    binding.layoutRawControls.setVisibility(View.VISIBLE);
                     double audioSec = pcm.length / 44100.0;
-                    binding.tvDecodeMetrics.setText(String.format("Raw Fallback: Decoded %.1fs in %d ms • %d frames",
-                            audioSec, duration, rawDecoder.getFrameCount() + 1));
+                    binding.tvDecodeMetrics.setText(String.format("Raw Fallback: Decoded %.1fs in %d ms • %d frames (%d lines)",
+                            audioSec, duration, rawDecoder.getFrameCount() + 1, rawDecoder.getCurrentLine() + 1));
                     binding.tvTelemetryMode.setText("Mode: RAW (Auto-Fallback)");
+                    binding.scrollDecodedImage.post(() -> binding.scrollDecodedImage.scrollTo(0, 0));
                 });
                 return;
             }
