@@ -330,6 +330,85 @@ public class SstvLoopbackTest {
         System.out.println("RawSstvStreamDecoder test passed successfully!");
     }
 
+    /**
+     * Test 8: Universal Live SSTV Receiver Continuous Streaming Test.
+     * Verifies that LiveSstvReceiver dynamically detects VIS headers from incoming microphone chunks,
+     * locks onto the mode, decodes scanlines in real-time, fires completion callback, and re-arms.
+     */
+    @Test
+    public void testLiveSstvReceiverAutoDetection() {
+        SstvMode testMode = SstvMode.LIGHTWEIGHT;
+        int width = testMode.getWidth();
+        int height = testMode.getHeight();
+
+        int[] pixels = new int[width * height];
+        for (int i = 0; i < pixels.length; i++) {
+            pixels[i] = ((i % width) < width / 2) ? 0xFF00FF00 : 0xFFFF0000;
+        }
+
+        short[] pcm = encoder.encodePixels(pixels, width, height, testMode, null);
+
+        com.fultograph.app.dsp.LiveSstvReceiver liveReceiver = new com.fultograph.app.dsp.LiveSstvReceiver();
+        final SstvMode[] detectedMode = new SstvMode[1];
+        final int[] renderedLineCount = new int[1];
+        final boolean[] completed = new boolean[1];
+
+        liveReceiver.setReceiverListener(new com.fultograph.app.dsp.LiveSstvReceiver.ReceiverListener() {
+            @Override
+            public void onModeDetected(SstvMode mode) {
+                detectedMode[0] = mode;
+            }
+
+            @Override
+            public void onLineRendered(int currentLine, int totalLines, android.graphics.Bitmap currentBitmap) {
+                renderedLineCount[0] = currentLine;
+            }
+
+            @Override
+            public void onImageCompleted(SstvMode mode, android.graphics.Bitmap completedBitmap) {
+                completed[0] = true;
+            }
+
+            @Override
+            public void onStatusUpdate(String status) {}
+        });
+
+        // Feed in 1024-sample live microphone chunks
+        int chunkSize = 1024;
+        for (int offset = 0; offset < pcm.length; offset += chunkSize) {
+            int len = Math.min(chunkSize, pcm.length - offset);
+            liveReceiver.processChunk(pcm, offset, len);
+        }
+        // Flush remaining samples for the final scanline
+        liveReceiver.processChunk(new short[4096], 0, 4096);
+
+        System.out.println("LiveReceiverTest: renderedLineCount=" + renderedLineCount[0] + ", currentLine=" + liveReceiver.getCurrentLine() + ", height=" + height + ", completed=" + completed[0]);
+        assertEquals("Live receiver must auto-detect mode from header", testMode, detectedMode[0]);
+        assertTrue("Live receiver must complete image", completed[0]);
+        assertTrue("Live receiver must render all lines", renderedLineCount[0] >= height - 2);
+        System.out.println("LiveSstvReceiver auto-detection test passed successfully!");
+    }
+
+    /**
+     * Test 9: Verify All Standard SSTV Modes (Martin, Scottie, Robot, SC2-120, PD 90) VIS Mapping.
+     */
+    @Test
+    public void testAllStandardModesVisMapping() {
+        assertEquals(SstvMode.ROBOT_8_BW, SstvMode.fromVisCode(2));
+        assertEquals(SstvMode.ROBOT_36, SstvMode.fromVisCode(8));
+        assertEquals(SstvMode.FAST_12, SstvMode.fromVisCode(12, 44100 * 12));
+        assertEquals(SstvMode.ROBOT_72, SstvMode.fromVisCode(12, 44100 * 72));
+        assertEquals(SstvMode.LIGHTWEIGHT, SstvMode.fromVisCode(16));
+        assertEquals(SstvMode.MARTIN_1, SstvMode.fromVisCode(44));
+        assertEquals(SstvMode.MARTIN_2, SstvMode.fromVisCode(40));
+        assertEquals(SstvMode.SCOTTIE_1, SstvMode.fromVisCode(60));
+        assertEquals(SstvMode.SCOTTIE_2, SstvMode.fromVisCode(56));
+        assertEquals(SstvMode.SCOTTIE_DX, SstvMode.fromVisCode(76));
+        assertEquals(SstvMode.SC2_120, SstvMode.fromVisCode(55));
+        assertEquals(SstvMode.PD_90, SstvMode.fromVisCode(99));
+        System.out.println("All 12 SSTV standard modes VIS mapping verified successfully!");
+    }
+
     private short[] generateSineWave(double freqHz, int numSamples) {
         short[] pcm = new short[numSamples];
         double phase = 0;

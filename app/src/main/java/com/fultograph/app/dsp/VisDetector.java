@@ -146,7 +146,7 @@ public class VisDetector {
         int stopBitStart = bitsStartIdx + totalBitsSamples;
         boolean stopBitValid = verifyTone(freqs, stopBitStart, (int) (18 * SAMPLES_PER_MS), 1100.0, 1350.0);
 
-        SstvMode mode = SstvMode.fromVisCode(visCode);
+        SstvMode mode = SstvMode.fromVisCode(visCode, freqs.length);
 
         // If mode matches a known SSTV mode with valid parity or stop bit
         if (mode != null && (parityValid || stopBitValid)) {

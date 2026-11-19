@@ -2,6 +2,9 @@ package com.fultograph.app.dsp;
 
 import android.graphics.Bitmap;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * High-performance SSTV Audio Decoder.
  * Supports ultra-fast offline decoding (< 300 ms for 6-12s modes, < 1s for Robot 36)
@@ -101,6 +104,50 @@ public class SstvDecoder {
     }
 
     /**
+     * Scans through an entire audio buffer and decodes all SSTV transmissions found sequentially.
+     */
+    public List<DecodeResult> decodeAll(short[] pcm, SstvMode forcedMode, double slantOffsetSamples, LineCallback callback) {
+        List<DecodeResult> results = new ArrayList<>();
+        if (pcm == null || pcm.length < 44100) {
+            return results;
+        }
+
+        // 1. Demodulate entire PCM to frequency buffer once
+        demodulator.reset();
+        int pcmLen = pcm.length;
+        double[] freqs = new double[pcmLen];
+        demodulator.demodulateBuffer(pcm, 0, pcmLen, freqs, 0);
+
+        int scanOffset = 0;
+        while (scanOffset < pcmLen - 44100) {
+            VisDetector.VisResult vis = VisDetector.findVisInFrequencies(freqs, scanOffset, pcmLen - scanOffset);
+            if (vis != null && vis.mode != null) {
+                SstvMode mode = (forcedMode != null) ? forcedMode : vis.mode;
+                int width = mode.getWidth();
+                int height = mode.getHeight();
+                int[] pixels = new int[width * height];
+                for (int i = 0; i < pixels.length; i++) pixels[i] = 0xFF101014;
+
+                decodeScanlines(freqs, vis.imageStartSample, mode, slantOffsetSamples, pixels, callback);
+                results.add(new DecodeResult(pixels, width, height, mode, 0, true, vis.visCode));
+
+                // Advance past this transmission
+                int transmissionSamples = (int) Math.round((double) height * mode.getLineSamples());
+                scanOffset = Math.max(scanOffset + 44100, vis.imageStartSample + transmissionSamples);
+            } else {
+                break;
+            }
+        }
+
+        // If no VIS headers were found at all, decode as single transmission
+        if (results.isEmpty()) {
+            results.add(decode(pcm, forcedMode, slantOffsetSamples, callback));
+        }
+
+        return results;
+    }
+
+    /**
      * Searches for the first valid 1200 Hz sync pulse in frequencies.
      */
     private int findFirstSyncPulse(double[] freqs, int start, SstvMode mode) {
@@ -156,7 +203,8 @@ public class SstvDecoder {
             boolean isEven = (y % 2 == 0);
             int pairIdx = y / 2;
 
-            if (mode == SstvMode.ROBOT_8_BW) {
+            SstvMode.ColorFormat format = mode.getColorFormat();
+            if (format == SstvMode.ColorFormat.BW_Y) {
                 // Robot 8 B&W decoding
                 for (int x = 0; x < width; x++) {
                     double sStart = yStart + (double) x * yScanTotalSamples / width;
@@ -165,6 +213,128 @@ public class SstvDecoder {
                     int val = freqToPixel(f);
                     // Opaque Grayscale ARGB
                     pixels[rowOffset + x] = 0xFF000000 | (val << 16) | (val << 8) | val;
+                }
+            } else if (format == SstvMode.ColorFormat.RGB_MARTIN) {
+                // Martin 1 & Martin 2: Sync -> Porch -> Green -> Sep -> Blue -> Sep -> Red -> Sep
+                int gStart = yStart;
+                int bStart = gStart + yScanTotalSamples + sepSamples;
+                int rStart = bStart + yScanTotalSamples + sepSamples;
+
+                for (int x = 0; x < width; x++) {
+                    double g0 = gStart + (double) x * yScanTotalSamples / width;
+                    double g1 = gStart + (double) (x + 1) * yScanTotalSamples / width;
+                    int g = freqToPixel(getAverageFreq(freqs, g0, g1));
+
+                    double b0 = bStart + (double) x * yScanTotalSamples / width;
+                    double b1 = bStart + (double) (x + 1) * yScanTotalSamples / width;
+                    int b = freqToPixel(getAverageFreq(freqs, b0, b1));
+
+                    double r0 = rStart + (double) x * yScanTotalSamples / width;
+                    double r1 = rStart + (double) (x + 1) * yScanTotalSamples / width;
+                    int r = freqToPixel(getAverageFreq(freqs, r0, r1));
+
+                    pixels[rowOffset + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                }
+            } else if (format == SstvMode.ColorFormat.RGB_SCOTTIE) {
+                // Scottie 1, Scottie 2, Scottie DX:
+                // Preceded by 9ms sync. Each line: Sep (1.5ms) -> Green -> Sep (1.5ms) -> Blue -> Sync (9ms) -> Porch (1.5ms) -> Red
+                int scottieLineStart = initialStartSample + (int) Math.round(9.0 * 44.1) + (int) Math.round(y * ((double) lineSamples + slantOffset));
+                int gStart = scottieLineStart + sepSamples;
+                int bStart = gStart + yScanTotalSamples + sepSamples;
+                int rStart = bStart + yScanTotalSamples + syncSamples + porchSamples;
+
+                for (int x = 0; x < width; x++) {
+                    double g0 = gStart + (double) x * yScanTotalSamples / width;
+                    double g1 = gStart + (double) (x + 1) * yScanTotalSamples / width;
+                    int g = freqToPixel(getAverageFreq(freqs, g0, g1));
+
+                    double b0 = bStart + (double) x * yScanTotalSamples / width;
+                    double b1 = bStart + (double) (x + 1) * yScanTotalSamples / width;
+                    int b = freqToPixel(getAverageFreq(freqs, b0, b1));
+
+                    double r0 = rStart + (double) x * yScanTotalSamples / width;
+                    double r1 = rStart + (double) (x + 1) * yScanTotalSamples / width;
+                    int r = freqToPixel(getAverageFreq(freqs, r0, r1));
+
+                    pixels[rowOffset + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                }
+            } else if (format == SstvMode.ColorFormat.YCRCB_ROBOT72) {
+                // Robot 72: Y -> Cr -> Cb on every line
+                int crStart = yStart + yScanTotalSamples + sepSamples + porch2Samples;
+                int cbStart = crStart + cScanTotalSamples + sepSamples + porch2Samples;
+
+                for (int x = 0; x < width; x++) {
+                    double y0 = yStart + (double) x * yScanTotalSamples / width;
+                    double y1 = yStart + (double) (x + 1) * yScanTotalSamples / width;
+                    int yVal = freqToPixel(getAverageFreq(freqs, y0, y1));
+
+                    double cr0 = crStart + (double) x * cScanTotalSamples / width;
+                    double cr1 = crStart + (double) (x + 1) * cScanTotalSamples / width;
+                    int cr = freqToPixel(getAverageFreq(freqs, cr0, cr1));
+
+                    double cb0 = cbStart + (double) x * cScanTotalSamples / width;
+                    double cb1 = cbStart + (double) (x + 1) * cScanTotalSamples / width;
+                    int cb = freqToPixel(getAverageFreq(freqs, cb0, cb1));
+
+                    pixels[rowOffset + x] = ycbcrToRgb(yVal, cr, cb);
+                }
+            } else if (format == SstvMode.ColorFormat.RGB_WRAASE) {
+                // SC2-120: Red -> Green -> Blue
+                int rStart = yStart;
+                int gStart = rStart + yScanTotalSamples;
+                int bStart = gStart + yScanTotalSamples;
+
+                for (int x = 0; x < width; x++) {
+                    double r0 = rStart + (double) x * yScanTotalSamples / width;
+                    double r1 = rStart + (double) (x + 1) * yScanTotalSamples / width;
+                    int r = freqToPixel(getAverageFreq(freqs, r0, r1));
+
+                    double g0 = gStart + (double) x * yScanTotalSamples / width;
+                    double g1 = gStart + (double) (x + 1) * yScanTotalSamples / width;
+                    int g = freqToPixel(getAverageFreq(freqs, g0, g1));
+
+                    double b0 = bStart + (double) x * yScanTotalSamples / width;
+                    double b1 = bStart + (double) (x + 1) * yScanTotalSamples / width;
+                    int b = freqToPixel(getAverageFreq(freqs, b0, b1));
+
+                    pixels[rowOffset + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                }
+            } else if (format == SstvMode.ColorFormat.YCRCB_PD) {
+                // PD 90: Y0 -> Cr -> Cb -> Y1 (2 lines per cycle)
+                if (y < height / 2) {
+                    int k = y;
+                    double kLineStart = initialStartSample + (k * (double) lineSamples) + (k * slantOffset);
+                    int kStartSample = (int) Math.round(kLineStart);
+                    int y0Start = kStartSample + syncSamples + porchSamples;
+                    int crStart = y0Start + yScanTotalSamples;
+                    int cbStart = crStart + yScanTotalSamples;
+                    int y1Start = cbStart + yScanTotalSamples;
+
+                    int row0 = (2 * k) * width;
+                    int row1 = (2 * k + 1) * width;
+
+                    for (int x = 0; x < width; x++) {
+                        double y0_0 = y0Start + (double) x * yScanTotalSamples / width;
+                        double y0_1 = y0Start + (double) (x + 1) * yScanTotalSamples / width;
+                        int y0 = freqToPixel(getAverageFreq(freqs, y0_0, y0_1));
+
+                        double cr0 = crStart + (double) x * yScanTotalSamples / width;
+                        double cr1 = crStart + (double) (x + 1) * yScanTotalSamples / width;
+                        int cr = freqToPixel(getAverageFreq(freqs, cr0, cr1));
+
+                        double cb0 = cbStart + (double) x * yScanTotalSamples / width;
+                        double cb1 = cbStart + (double) (x + 1) * yScanTotalSamples / width;
+                        int cb = freqToPixel(getAverageFreq(freqs, cb0, cb1));
+
+                        double y1_0 = y1Start + (double) x * yScanTotalSamples / width;
+                        double y1_1 = y1Start + (double) (x + 1) * yScanTotalSamples / width;
+                        int y1 = freqToPixel(getAverageFreq(freqs, y1_0, y1_1));
+
+                        pixels[row0 + x] = ycbcrToRgb(y0, cr, cb);
+                        if (2 * k + 1 < height) {
+                            pixels[row1 + x] = ycbcrToRgb(y1, cr, cb);
+                        }
+                    }
                 }
             } else {
                 // Color mode decoding (Robot 36, Fast 12, Lightweight)

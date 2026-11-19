@@ -28,18 +28,22 @@ import com.fultograph.app.audio.LiveAudioRecorder;
 import com.fultograph.app.audio.WavFileHandler;
 import com.fultograph.app.databinding.FragmentReceiveBinding;
 import com.fultograph.app.dsp.FmDemodulator;
+import com.fultograph.app.dsp.LiveSstvReceiver;
 import com.fultograph.app.dsp.RawSstvStreamDecoder;
 import com.fultograph.app.dsp.SstvDecoder;
 import com.fultograph.app.dsp.SstvMode;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
  * Receive Fragment: Real-time frequency waterfall, live continuous Raw Mode streaming (no time limit),
- * automatic VIS detection, sub-second offline WAV decoding, slant correction, and gallery export.
+ * universal real-time live SSTV receiver for all color modes (Martin, Scottie, Robot, SC2-120, PD 90),
+ * sub-second offline WAV decoding, slant correction, and gallery export.
  */
 public class ReceiveFragment extends Fragment {
 
@@ -47,23 +51,18 @@ public class ReceiveFragment extends Fragment {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final SstvDecoder decoder = new SstvDecoder();
     private final RawSstvStreamDecoder rawDecoder = new RawSstvStreamDecoder();
+    private final LiveSstvReceiver liveReceiver = new LiveSstvReceiver();
     private final FmDemodulator liveDemodulator = new FmDemodulator();
     private final LiveAudioRecorder recorder = new LiveAudioRecorder();
 
     // Receiver state
     private boolean isRawMode = false;
-    private SstvMode forcedMode = null; // null means Auto-Detect (VIS)
+    private SstvMode forcedMode = null; // null means Auto-Detect (Continuous Live • All Modes)
     private double currentSlantOffset = 0.0;
 
     // Buffer for current audio session
     private short[] activePcmBuffer;
     private Bitmap lastDecodedBitmap;
-
-    // Fixed-length rolling buffer only for standard VIS mode
-    private final int MAX_STREAM_SAMPLES = 44100 * 45;
-    private short[] streamPcm = new short[MAX_STREAM_SAMPLES];
-    private int streamWriteIndex = 0;
-    private long lastLiveDecodeUpdate = 0;
 
     private final ActivityResultLauncher<String> requestPermissionLauncher =
             registerForActivityResult(new ActivityResultContracts.RequestPermission(), isGranted -> {
@@ -97,14 +96,13 @@ public class ReceiveFragment extends Fragment {
     }
 
     private void setupModeDropdown() {
-        String[] options = {
-                "Auto-Detect (VIS)",
-                "Raw Mode (Continuous Real-Time)",
-                SstvMode.ROBOT_8_BW.getDisplayName(),
-                SstvMode.LIGHTWEIGHT.getDisplayName(),
-                SstvMode.FAST_12.getDisplayName(),
-                SstvMode.ROBOT_36.getDisplayName()
-        };
+        List<String> optionsList = new ArrayList<>();
+        optionsList.add("Auto-Detect (Continuous Live • All Modes)");
+        optionsList.add("Raw Mode (Continuous Real-Time)");
+        for (SstvMode m : SstvMode.values()) {
+            optionsList.add(m.getDisplayName());
+        }
+        String[] options = optionsList.toArray(new String[0]);
 
         ArrayAdapter<String> adapter = new ArrayAdapter<>(
                 requireContext(),
@@ -120,8 +118,9 @@ public class ReceiveFragment extends Fragment {
                 // Auto-Detect VIS
                 isRawMode = false;
                 forcedMode = null;
+                liveReceiver.forceMode(null);
                 binding.layoutRawControls.setVisibility(View.GONE);
-                binding.cardDecodedImage.getLayoutParams().height = (int) (260 * density);
+                binding.cardDecodedImage.getLayoutParams().height = (int) (320 * density);
                 binding.cardDecodedImage.requestLayout();
                 binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
                 binding.scrollDecodedImage.scrollTo(0, 0);
@@ -134,14 +133,15 @@ public class ReceiveFragment extends Fragment {
                 binding.cardDecodedImage.getLayoutParams().height = (int) (440 * density);
                 binding.cardDecodedImage.requestLayout();
                 binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_XY);
-                binding.tvTelemetryMode.setText("Mode: RAW (Real-Time • 66.7ms)");
+                binding.tvTelemetryMode.setText("Mode: RAW (Real-Time • " + String.format("%.1f", rawDecoder.getLineDurationMs()) + "ms)");
                 binding.tvDecodeMetrics.setText("Raw Mode active: Continuous scrollable feed. No time limit.");
             } else {
                 // Specific SSTV mode
                 isRawMode = false;
                 forcedMode = SstvMode.values()[position - 2];
+                liveReceiver.forceMode(forcedMode);
                 binding.layoutRawControls.setVisibility(View.GONE);
-                binding.cardDecodedImage.getLayoutParams().height = (int) (260 * density);
+                binding.cardDecodedImage.getLayoutParams().height = (int) (320 * density);
                 binding.cardDecodedImage.requestLayout();
                 binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
                 binding.scrollDecodedImage.scrollTo(0, 0);
@@ -185,6 +185,57 @@ public class ReceiveFragment extends Fragment {
     }
 
     private void setupAudioRecorder() {
+        liveReceiver.setReceiverListener(new LiveSstvReceiver.ReceiverListener() {
+            @Override
+            public void onModeDetected(SstvMode mode) {
+                if (!isAdded()) return;
+                requireActivity().runOnUiThread(() -> {
+                    binding.tvTelemetryMode.setText("Mode: " + mode.name() + " (Locked)");
+                    binding.tvDecodeMetrics.setText("Locked: " + mode.getDisplayName() + " • Decoding live...");
+                    binding.progressDecodeLive.setVisibility(View.VISIBLE);
+                    binding.progressDecodeLive.setIndeterminate(false);
+                    binding.progressDecodeLive.setProgress(0);
+                    float density = getResources().getDisplayMetrics().density;
+                    binding.cardDecodedImage.getLayoutParams().height = (int) (320 * density);
+                    binding.cardDecodedImage.requestLayout();
+                    binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+                });
+            }
+
+            @Override
+            public void onLineRendered(int currentLine, int totalLines, Bitmap currentBitmap) {
+                if (!isAdded()) return;
+                requireActivity().runOnUiThread(() -> {
+                    lastDecodedBitmap = currentBitmap;
+                    binding.ivDecodedImage.setImageBitmap(currentBitmap);
+                    int pct = (int) ((currentLine / (float) totalLines) * 100);
+                    binding.progressDecodeLive.setProgress(pct);
+                    binding.tvDecodeMetrics.setText(String.format("Decoding %s: Line %d / %d (%d%%)",
+                            liveReceiver.getCurrentMode() != null ? liveReceiver.getCurrentMode().name() : "SSTV",
+                            currentLine + 1, totalLines, pct));
+                });
+            }
+
+            @Override
+            public void onImageCompleted(SstvMode mode, Bitmap completedBitmap) {
+                if (!isAdded()) return;
+                requireActivity().runOnUiThread(() -> {
+                    lastDecodedBitmap = completedBitmap;
+                    binding.ivDecodedImage.setImageBitmap(completedBitmap);
+                    binding.progressDecodeLive.setProgress(100);
+                    binding.tvDecodeMetrics.setText(String.format("Completed %s (%d×%d) • Ready for next image!",
+                            mode.name(), mode.getWidth(), mode.getHeight()));
+                    Toast.makeText(requireContext(), "Received " + mode.name() + " image!", Toast.LENGTH_SHORT).show();
+                });
+            }
+
+            @Override
+            public void onStatusUpdate(String status) {
+                if (!isAdded()) return;
+                requireActivity().runOnUiThread(() -> binding.tvDecodeMetrics.setText(status));
+            }
+        });
+
         recorder.setAudioRecordListener(new LiveAudioRecorder.AudioRecordListener() {
             @Override
             public void onAudioChunk(short[] chunk, int length, double rms, boolean isClipping, boolean isTooQuiet) {
@@ -223,19 +274,8 @@ public class ReceiveFragment extends Fragment {
                     return;
                 }
 
-                // 5. Standard VIS mode: Append to rolling stream buffer
-                synchronized (streamPcm) {
-                    int toCopy = Math.min(length, MAX_STREAM_SAMPLES - streamWriteIndex);
-                    System.arraycopy(chunk, 0, streamPcm, streamWriteIndex, toCopy);
-                    streamWriteIndex += toCopy;
-                }
-
-                // Periodic VIS live decode update
-                long now = System.currentTimeMillis();
-                if (now - lastLiveDecodeUpdate > 250 && streamWriteIndex > 44100) {
-                    lastLiveDecodeUpdate = now;
-                    triggerLiveDecodeUpdate();
-                }
+                // 5. Universal Live SSTV Receiver: Continuous real-time decode with zero time limits
+                liveReceiver.processChunk(chunk, 0, length);
             }
 
             @Override
@@ -277,10 +317,13 @@ public class ReceiveFragment extends Fragment {
             binding.ivDecodedImage.setImageBitmap(rawDecoder.getCanvasBitmap());
             binding.tvDecodeMetrics.setText("Raw Mode: Listening and decoding live stream continuously...");
         } else {
-            synchronized (streamPcm) {
-                streamWriteIndex = 0;
+            if (forcedMode != null) {
+                liveReceiver.forceMode(forcedMode);
+                binding.tvDecodeMetrics.setText("Listening for " + forcedMode.getDisplayName() + "...");
+            } else {
+                liveReceiver.reset();
+                binding.tvDecodeMetrics.setText("Listening for SSTV tones (Auto-detecting all modes)...");
             }
-            binding.tvDecodeMetrics.setText("Listening for SSTV tones via microphone...");
         }
 
         liveDemodulator.reset();
@@ -296,43 +339,12 @@ public class ReceiveFragment extends Fragment {
         recorder.stopRecording();
         setListeningUi(false);
         binding.progressDecodeLive.setVisibility(View.GONE);
-
-        if (!isRawMode) {
-            synchronized (streamPcm) {
-                if (streamWriteIndex > 44100) {
-                    short[] recorded = new short[streamWriteIndex];
-                    System.arraycopy(streamPcm, 0, recorded, 0, streamWriteIndex);
-                    activePcmBuffer = recorded;
-                    decodeOfflineBuffer(recorded);
-                }
-            }
-        }
     }
 
     private void setListeningUi(boolean listening) {
         binding.btnListen.setText(listening ? "Stop Listening" : "Start Listening");
         binding.btnListen.setIconResource(listening ?
                 android.R.drawable.ic_media_pause : android.R.drawable.ic_btn_speak_now);
-    }
-
-    private void triggerLiveDecodeUpdate() {
-        executor.execute(() -> {
-            short[] snapshot;
-            synchronized (streamPcm) {
-                snapshot = new short[streamWriteIndex];
-                System.arraycopy(streamPcm, 0, snapshot, 0, streamWriteIndex);
-            }
-
-            SstvDecoder.DecodeResult res = decoder.decode(snapshot, forcedMode, currentSlantOffset, null);
-            if (res.visDetected || res.pixels != null) {
-                Bitmap bmp = res.toBitmap();
-                requireActivity().runOnUiThread(() -> {
-                    lastDecodedBitmap = bmp;
-                    binding.ivDecodedImage.setImageBitmap(bmp);
-                    binding.tvTelemetryMode.setText("Mode: " + res.mode.name());
-                });
-            }
-        });
     }
 
     private void onWavFilePicked(@Nullable Uri uri) {
@@ -368,7 +380,7 @@ public class ReceiveFragment extends Fragment {
         executor.execute(() -> {
             long startTime = System.currentTimeMillis();
 
-            // Check if Raw Mode is active OR if standard decode finds no VIS header
+            // Check if Raw Mode is active
             if (isRawMode) {
                 rawDecoder.clearCanvas();
                 rawDecoder.processChunk(pcm, 0, pcm.length);
@@ -392,15 +404,15 @@ public class ReceiveFragment extends Fragment {
                 return;
             }
 
-            // Standard VIS-based decode
-            SstvDecoder.DecodeResult res = decoder.decode(pcm, forcedMode, currentSlantOffset, (line, total, pixels, mode) -> {
+            // Universal multi-image offline decode (handles single images and multi-image compilations)
+            List<SstvDecoder.DecodeResult> results = decoder.decodeAll(pcm, forcedMode, currentSlantOffset, (line, total, pixels, mode) -> {
                 int percent = (int) ((line / (float) total) * 100);
                 requireActivity().runOnUiThread(() -> binding.progressDecodeLive.setProgress(percent));
             });
 
             // If no VIS header is detected in the audio (e.g. 1980s transmission), automatically
             // fallback to Raw Mode to decode the full multi-frame signal without failure!
-            if (!res.visDetected && forcedMode == null && pcm.length > 44100 * 10) {
+            if (results.isEmpty() || (!results.get(0).visDetected && forcedMode == null && pcm.length > 44100 * 10)) {
                 rawDecoder.clearCanvas();
                 rawDecoder.processChunk(pcm, 0, pcm.length);
                 Bitmap bmp = rawDecoder.getCanvasBitmap();
@@ -424,17 +436,65 @@ public class ReceiveFragment extends Fragment {
                 return;
             }
 
-            Bitmap bmp = res.toBitmap();
-            requireActivity().runOnUiThread(() -> {
-                lastDecodedBitmap = bmp;
-                binding.ivDecodedImage.setImageBitmap(bmp);
-                binding.progressDecodeLive.setVisibility(View.GONE);
+            long duration = System.currentTimeMillis() - startTime;
 
-                String visInfo = res.visDetected ? ("VIS: " + res.mode.name()) : ("Forced: " + res.mode.name());
-                binding.tvDecodeMetrics.setText("Decoded in " + res.decodeTimeMs + " ms • " +
-                        visInfo + " (" + res.width + "×" + res.height + ")");
-                binding.tvTelemetryMode.setText("Mode: " + res.mode.name());
-            });
+            if (results.size() == 1) {
+                SstvDecoder.DecodeResult res = results.get(0);
+                Bitmap bmp = res.toBitmap();
+                requireActivity().runOnUiThread(() -> {
+                    lastDecodedBitmap = bmp;
+                    float density = getResources().getDisplayMetrics().density;
+                    binding.cardDecodedImage.getLayoutParams().height = (int) (320 * density);
+                    binding.cardDecodedImage.requestLayout();
+                    binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+                    binding.ivDecodedImage.setImageBitmap(bmp);
+                    binding.progressDecodeLive.setVisibility(View.GONE);
+
+                    String visInfo = res.visDetected ? ("VIS: " + res.mode.name()) : ("Forced: " + res.mode.name());
+                    binding.tvDecodeMetrics.setText("Decoded in " + duration + " ms • " +
+                            visInfo + " (" + res.width + "×" + res.height + ")");
+                    binding.tvTelemetryMode.setText("Mode: " + res.mode.name());
+                });
+            } else {
+                // Multi-image decode (e.g. YouTube SSTV compilations like h1VmbZuwCJ0 with 7 images!)
+                int maxWidth = 0;
+                int totalHeight = 0;
+                int gap = 16;
+                for (SstvDecoder.DecodeResult r : results) {
+                    if (r.width > maxWidth) maxWidth = r.width;
+                    totalHeight += r.height + gap;
+                }
+                Bitmap composite = Bitmap.createBitmap(maxWidth, totalHeight, Bitmap.Config.ARGB_8888);
+                android.graphics.Canvas canvas = new android.graphics.Canvas(composite);
+                canvas.drawColor(0xFF101014);
+
+                int yOffset = 0;
+                StringBuilder modesSummary = new StringBuilder();
+                for (int i = 0; i < results.size(); i++) {
+                    SstvDecoder.DecodeResult r = results.get(i);
+                    Bitmap img = r.toBitmap();
+                    int xOffset = (maxWidth - r.width) / 2;
+                    canvas.drawBitmap(img, xOffset, yOffset, null);
+                    yOffset += r.height + gap;
+                    if (i > 0) modesSummary.append(", ");
+                    modesSummary.append(r.mode.name());
+                }
+
+                requireActivity().runOnUiThread(() -> {
+                    lastDecodedBitmap = composite;
+                    float density = getResources().getDisplayMetrics().density;
+                    binding.cardDecodedImage.getLayoutParams().height = (int) (440 * density);
+                    binding.cardDecodedImage.requestLayout();
+                    binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_XY);
+                    binding.ivDecodedImage.setImageBitmap(composite);
+                    binding.progressDecodeLive.setVisibility(View.GONE);
+
+                    binding.tvDecodeMetrics.setText(String.format("Decoded %d images in %d ms (%s)",
+                            results.size(), duration, modesSummary.toString()));
+                    binding.tvTelemetryMode.setText("Multi: " + results.size() + " Images");
+                    binding.scrollDecodedImage.post(() -> binding.scrollDecodedImage.scrollTo(0, 0));
+                });
+            }
         });
     }
 
