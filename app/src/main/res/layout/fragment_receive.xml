@@ -140,6 +140,59 @@
                 android:textColor="@color/on_surface" />
         </com.google.android.material.textfield.TextInputLayout>
 
+        <!-- Raw Mode Controls (Visible when Raw Mode is selected) -->
+        <LinearLayout
+            android:id="@+id/layout_raw_controls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="8dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Line Rate:"
+                android:textColor="@color/primary"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:layout_marginEnd="6dp" />
+
+            <com.google.android.material.chip.ChipGroup
+                android:id="@+id/chip_group_raw_speed"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                app:singleSelection="true">
+
+                <com.google.android.material.chip.Chip
+                    android:id="@+id/chip_raw_8s"
+                    style="@style/Widget.Material3.Chip.Filter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="8s (66.7ms)"
+                    android:textSize="10sp" />
+
+                <com.google.android.material.chip.Chip
+                    android:id="@+id/chip_raw_36s"
+                    style="@style/Widget.Material3.Chip.Filter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="36s (150ms)"
+                    android:textSize="10sp" />
+            </com.google.android.material.chip.ChipGroup>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_clear_canvas"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Clear"
+                android:textSize="11sp" />
+        </LinearLayout>
+
         <!-- Primary Action Buttons -->
         <LinearLayout
             android:layout_width="match_parent"

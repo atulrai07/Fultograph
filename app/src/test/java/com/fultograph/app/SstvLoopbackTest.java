@@ -3,6 +3,7 @@ package com.fultograph.app;
 import com.fultograph.app.audio.WavFileHandler;
 import com.fultograph.app.dsp.FastFft;
 import com.fultograph.app.dsp.FmDemodulator;
+import com.fultograph.app.dsp.RawSstvStreamDecoder;
 import com.fultograph.app.dsp.SstvDecoder;
 import com.fultograph.app.dsp.SstvEncoder;
 import com.fultograph.app.dsp.SstvMode;
@@ -228,6 +229,105 @@ public class SstvLoopbackTest {
         assertTrue("Decode time should be <= " + maxExpectedDecodeTimeMs + " ms (got " + result.decodeTimeMs + " ms)",
                 result.decodeTimeMs <= maxExpectedDecodeTimeMs);
         System.out.println(mode.name() + " loopback test passed successfully!");
+    }
+
+    /**
+     * Test 7: Raw Mode Continuous Streaming Decoder Test.
+     * Verifies that RawSstvStreamDecoder tracks 1200 Hz horizontal & vertical sync pulses
+     * and decodes raster scanlines in real time without requiring any digital VIS header.
+     */
+    @Test
+    public void testRawSstvStreamDecoder() {
+        int width = 160;
+        int height = 120;
+        double lineMs = 66.667;
+        RawSstvStreamDecoder streamDecoder = new RawSstvStreamDecoder(width, height, lineMs);
+
+        final int[] frameCountBox = new int[1];
+        final int[] lineCountBox = new int[1];
+        streamDecoder.setStreamListener(new RawSstvStreamDecoder.StreamListener() {
+            @Override
+            public void onScanlineRendered(int currentLine, int totalLines, int[] canvasPixels) {
+                lineCountBox[0] = currentLine;
+            }
+
+            @Override
+            public void onFrameSync(int frameIndex) {
+                frameCountBox[0] = frameIndex;
+            }
+        });
+
+        // 1. Synthesize audio without VIS header:
+        //    a) 30 ms Vertical Sync pulse @ 1200 Hz
+        //    b) 5 consecutive SSTV lines:
+        //       - 8 ms sync pulse @ 1200 Hz
+        //       - 58.667 ms active video ramp from 1500 Hz (black) to 2300 Hz (white)
+        double sampleRate = 44100.0;
+        int vSyncSamples = (int) Math.round(30.0 * sampleRate / 1000.0);
+        int hSyncSamples = (int) Math.round(8.0 * sampleRate / 1000.0);
+        int videoSamples = (int) Math.round((lineMs - 8.0) * sampleRate / 1000.0);
+        int lineSamples = hSyncSamples + videoSamples;
+        int numLines = 5;
+
+        int totalSamples = vSyncSamples + (numLines * lineSamples);
+        short[] streamPcm = new short[totalSamples];
+        int idx = 0;
+        double phase = 0;
+
+        // Vertical Sync
+        for (int i = 0; i < vSyncSamples; i++) {
+            streamPcm[idx++] = (short) (Math.sin(phase) * 25000.0);
+            phase += 2.0 * Math.PI * 1200.0 / sampleRate;
+        }
+
+        // 5 Scanlines
+        for (int line = 0; line < numLines; line++) {
+            // Horizontal sync @ 1200 Hz
+            for (int i = 0; i < hSyncSamples; i++) {
+                streamPcm[idx++] = (short) (Math.sin(phase) * 25000.0);
+                phase += 2.0 * Math.PI * 1200.0 / sampleRate;
+            }
+            // Video ramp from 1500 Hz to 2300 Hz
+            for (int i = 0; i < videoSamples; i++) {
+                double freq = 1500.0 + (800.0 * i / (double) videoSamples);
+                streamPcm[idx++] = (short) (Math.sin(phase) * 25000.0);
+                phase += 2.0 * Math.PI * freq / sampleRate;
+            }
+        }
+
+        // 2. Feed stream in 1024-sample chunks (simulating live mic capture)
+        int chunkSize = 1024;
+        for (int offset = 0; offset < totalSamples; offset += chunkSize) {
+            int len = Math.min(chunkSize, totalSamples - offset);
+            streamDecoder.processChunk(streamPcm, offset, len);
+        }
+
+        // 3. Assertions
+        assertTrue("Vertical sync should have triggered frame callback", frameCountBox[0] >= 1);
+        assertTrue("Decoder should have advanced across scanlines (currentLine=" + streamDecoder.getCurrentLine() + ")",
+                streamDecoder.getCurrentLine() >= 4);
+
+        int[] pixels = streamDecoder.getCanvasPixels();
+        assertNotNull(pixels);
+        assertEquals(width * height, pixels.length);
+
+        // Verify video gradient on line 2 (tested inside active video range)
+        int lineToCheck = 2;
+        int leftPixelX = 15;
+        int rightPixelX = width - 15;
+        int leftVal = (pixels[lineToCheck * width + leftPixelX] >> 16) & 0xFF;
+        int rightVal = (pixels[lineToCheck * width + rightPixelX] >> 16) & 0xFF;
+
+        System.out.println("Raw Stream Decoder Test: Line " + lineToCheck + " left pixel=" + leftVal + ", right pixel=" + rightVal);
+        assertTrue("Left pixel (near 1500 Hz) should be dark (< 100, got " + leftVal + ")", leftVal < 100);
+        assertTrue("Right pixel (near 2300 Hz) should be bright (> 150, got " + rightVal + ")", rightVal > 150);
+        assertTrue("Right pixel should be brighter than left pixel", rightVal > leftVal + 80);
+
+        // Verify clearCanvas resets state
+        streamDecoder.clearCanvas();
+        assertEquals(0, streamDecoder.getCurrentLine());
+        assertEquals(0, streamDecoder.getFrameCount());
+        System.out.println("RawSstvStreamDecoder test passed successfully!");
     }
 
     private short[] generateSineWave(double freqHz, int numSamples) {

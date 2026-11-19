@@ -9,6 +9,7 @@ A modern, high-performance Slow-Scan Television (SSTV) audio encoder and decoder
 Fultograph transmits and receives visual imagery across standard analog audio channels (radio frequency, acoustic speaker-to-microphone, or lossless PCM streams). Designed as an all-in-one, modern upgrade to legacy SSTV tools, it features:
 
 - **Sub-Second Offline Decoding:** Decodes entire multi-second transmissions in milliseconds (e.g. 36s Robot 36 in ~55 ms).
+- **Continuous Raw Mode:** Real-time streaming decoder with no time limit; tracks analog horizontal and vertical sync pulses on the fly for vintage/non-VIS transmissions (e.g., 1980s SSTV recordings).
 - **Pure Java Real-Time DSP:** Custom Quadrature (I/Q) FM demodulator, 2048-point Radix-2 FFT, and calibration header detector with zero external C++/NDK dependencies.
 - **Continuous Phase Synthesis:** Tone generation with continuous phase accumulation to eliminate audio transients and inter-tone clicks.
 - **Real-Time Waterfall Display:** Custom zero-allocation 1000–2500 Hz spectrogram view with calibrated frequency guides.
@@ -24,6 +25,7 @@ Fultograph transmits and receives visual imagery across standard analog audio ch
 | **Lightweight** | Color (YCrCb) | 160 × 120 | 50.000 ms | ~6.9 s | 16 |
 | **Fast 12** | Color (YCrCb) | 320 × 240 | 50.000 ms | ~12.9 s | 12 |
 | **Robot 36** | Color (YCrCb) | 320 × 240 | 150.000 ms | ~36.9 s | 8 |
+| **Raw Mode** | Real-Time Continuous | 320 × 240 | 66.7 / 150 ms | Unlimited | None (Auto PLL Sync) |
 
 ### Calibration & VIS Header
 Every transmission begins with a universal calibration prefix:
@@ -96,6 +98,7 @@ app/src/main/
 │   │   ├── SstvMode.java            # Mode definitions and sample timing calculations
 │   │   ├── SstvEncoder.java         # Continuous-phase PCM audio generator
 │   │   ├── SstvDecoder.java         # Offline and streaming scanline decoder
+│   │   ├── RawSstvStreamDecoder.java # Continuous real-time PLL sync stream decoder (no time limit)
 │   │   ├── FmDemodulator.java       # Fast Quadrature I/Q baseband demodulator
 │   │   ├── VisDetector.java         # Calibration header & VIS code detector
 │   │   └── FastFft.java             # 2048-point radix-2 Cooley-Tukey FFT
@@ -130,6 +133,7 @@ Verified results on 44.1 kHz 16-bit audio:
 - **Lightweight Color Loopback:** Encoded in **7 ms**, Decoded in **15 ms** (MAE: **23.24**).
 - **Fast 12 Color Loopback:** Encoded in **9 ms**, Decoded in **23 ms** (MAE: **27.22**).
 - **Robot 36 Color Loopback:** Encoded in **13 ms**, Decoded in **55 ms** (MAE: **13.25**).
+- **Raw Mode Stream Decoder:** Real-time chunk-by-chunk synchronization, horizontal PLL tracking, vertical sync frame resets, and continuous raster scanline demodulation verified.
 
 ---
 

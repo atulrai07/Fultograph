@@ -28,6 +28,7 @@ import com.fultograph.app.audio.LiveAudioRecorder;
 import com.fultograph.app.audio.WavFileHandler;
 import com.fultograph.app.databinding.FragmentReceiveBinding;
 import com.fultograph.app.dsp.FmDemodulator;
+import com.fultograph.app.dsp.RawSstvStreamDecoder;
 import com.fultograph.app.dsp.SstvDecoder;
 import com.fultograph.app.dsp.SstvMode;
 
@@ -37,27 +38,29 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Receive Fragment: Real-time frequency waterfall, live microphone SSTV capture & line-by-line decoding,
- * ultra-fast offline WAV decoding (< 300 ms), slant correction, and gallery export.
+ * Receive Fragment: Real-time frequency waterfall, live continuous Raw Mode streaming (no time limit),
+ * automatic VIS detection, sub-second offline WAV decoding, slant correction, and gallery export.
  */
 public class ReceiveFragment extends Fragment {
 
     private FragmentReceiveBinding binding;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final SstvDecoder decoder = new SstvDecoder();
+    private final RawSstvStreamDecoder rawDecoder = new RawSstvStreamDecoder();
     private final FmDemodulator liveDemodulator = new FmDemodulator();
     private final LiveAudioRecorder recorder = new LiveAudioRecorder();
 
-    // Receiver mode: null means Auto-Detect (VIS)
-    private SstvMode forcedMode = null;
+    // Receiver state
+    private boolean isRawMode = false;
+    private SstvMode forcedMode = null; // null means Auto-Detect (VIS)
     private double currentSlantOffset = 0.0;
 
-    // Buffer for current audio session (either live mic or imported WAV)
+    // Buffer for current audio session
     private short[] activePcmBuffer;
     private Bitmap lastDecodedBitmap;
 
-    // Streaming buffer for live microphone mode
-    private final int MAX_STREAM_SAMPLES = 44100 * 45; // up to ~45 seconds
+    // Fixed-length rolling buffer only for standard VIS mode
+    private final int MAX_STREAM_SAMPLES = 44100 * 45;
     private short[] streamPcm = new short[MAX_STREAM_SAMPLES];
     private int streamWriteIndex = 0;
     private long lastLiveDecodeUpdate = 0;
@@ -86,6 +89,7 @@ public class ReceiveFragment extends Fragment {
         super.onViewCreated(view, savedInstanceState);
 
         setupModeDropdown();
+        setupRawModeControls();
         setupAudioRecorder();
         setupActionButtons();
         setupSlantControl();
@@ -95,6 +99,7 @@ public class ReceiveFragment extends Fragment {
     private void setupModeDropdown() {
         String[] options = {
                 "Auto-Detect (VIS)",
+                "Raw Mode (Continuous Real-Time)",
                 SstvMode.ROBOT_8_BW.getDisplayName(),
                 SstvMode.LIGHTWEIGHT.getDisplayName(),
                 SstvMode.FAST_12.getDisplayName(),
@@ -111,17 +116,48 @@ public class ReceiveFragment extends Fragment {
 
         binding.actvRxMode.setOnItemClickListener((parent, view, position, id) -> {
             if (position == 0) {
+                // Auto-Detect VIS
+                isRawMode = false;
                 forcedMode = null;
+                binding.layoutRawControls.setVisibility(View.GONE);
                 binding.tvTelemetryMode.setText("Mode: Auto (VIS)");
+            } else if (position == 1) {
+                // Raw Mode (Continuous Real-Time, No Time Limit)
+                isRawMode = true;
+                forcedMode = null;
+                binding.layoutRawControls.setVisibility(View.VISIBLE);
+                binding.tvTelemetryMode.setText("Mode: RAW (Real-Time • 66.7ms)");
+                binding.tvDecodeMetrics.setText("Raw Mode active: No time limit. Listening decodes in real time.");
             } else {
-                forcedMode = SstvMode.values()[position - 1];
+                // Specific SSTV mode
+                isRawMode = false;
+                forcedMode = SstvMode.values()[position - 2];
+                binding.layoutRawControls.setVisibility(View.GONE);
                 binding.tvTelemetryMode.setText("Mode: " + forcedMode.name());
             }
 
-            // Re-decode if we already have an active PCM buffer
             if (activePcmBuffer != null) {
                 decodeOfflineBuffer(activePcmBuffer);
             }
+        });
+    }
+
+    private void setupRawModeControls() {
+        binding.chipRaw8s.setOnClickListener(v -> {
+            rawDecoder.setConfiguration(RawSstvStreamDecoder.DEFAULT_WIDTH, RawSstvStreamDecoder.DEFAULT_HEIGHT, 66.667);
+            binding.tvTelemetryMode.setText("Mode: RAW (8s • 66.7ms)");
+            if (activePcmBuffer != null) decodeOfflineBuffer(activePcmBuffer);
+        });
+
+        binding.chipRaw36s.setOnClickListener(v -> {
+            rawDecoder.setConfiguration(RawSstvStreamDecoder.DEFAULT_WIDTH, RawSstvStreamDecoder.DEFAULT_HEIGHT, 150.0);
+            binding.tvTelemetryMode.setText("Mode: RAW (36s • 150ms)");
+            if (activePcmBuffer != null) decodeOfflineBuffer(activePcmBuffer);
+        });
+
+        binding.btnClearCanvas.setOnClickListener(v -> {
+            rawDecoder.clearCanvas();
+            binding.ivDecodedImage.setImageBitmap(rawDecoder.getCanvasBitmap());
         });
     }
 
@@ -152,14 +188,25 @@ public class ReceiveFragment extends Fragment {
                     binding.tvSignalWarning.setVisibility(View.GONE);
                 }
 
-                // 4. Append to live stream buffer
+                // 4. Raw Mode: Instantaneous streaming line decode with zero buffer limit
+                if (isRawMode) {
+                    rawDecoder.processChunk(chunk, 0, length);
+                    Bitmap canvas = rawDecoder.getCanvasBitmap();
+                    lastDecodedBitmap = canvas;
+                    binding.ivDecodedImage.setImageBitmap(canvas);
+                    binding.tvDecodeMetrics.setText(String.format("Raw Stream: Frame %d • Line %d/%d (Live)",
+                            rawDecoder.getFrameCount() + 1, rawDecoder.getCurrentLine(), rawDecoder.getHeight()));
+                    return;
+                }
+
+                // 5. Standard VIS mode: Append to rolling stream buffer
                 synchronized (streamPcm) {
                     int toCopy = Math.min(length, MAX_STREAM_SAMPLES - streamWriteIndex);
                     System.arraycopy(chunk, 0, streamPcm, streamWriteIndex, toCopy);
                     streamWriteIndex += toCopy;
                 }
 
-                // 5. Periodic live scanline decode update (~4 times/sec)
+                // Periodic VIS live decode update
                 long now = System.currentTimeMillis();
                 if (now - lastLiveDecodeUpdate > 250 && streamWriteIndex > 44100) {
                     lastLiveDecodeUpdate = now;
@@ -201,16 +248,21 @@ public class ReceiveFragment extends Fragment {
     }
 
     private void startListening() {
-        // Reset live stream buffer
-        synchronized (streamPcm) {
-            streamWriteIndex = 0;
+        if (isRawMode) {
+            rawDecoder.clearCanvas();
+            binding.ivDecodedImage.setImageBitmap(rawDecoder.getCanvasBitmap());
+            binding.tvDecodeMetrics.setText("Raw Mode: Listening and decoding live stream continuously...");
+        } else {
+            synchronized (streamPcm) {
+                streamWriteIndex = 0;
+            }
+            binding.tvDecodeMetrics.setText("Listening for SSTV tones via microphone...");
         }
-        liveDemodulator.reset();
 
+        liveDemodulator.reset();
         boolean started = recorder.startRecording();
         setListeningUi(started);
         if (started) {
-            binding.tvDecodeMetrics.setText("Listening for SSTV tones via microphone...");
             binding.progressDecodeLive.setVisibility(View.VISIBLE);
             binding.progressDecodeLive.setIndeterminate(true);
         }
@@ -221,13 +273,14 @@ public class ReceiveFragment extends Fragment {
         setListeningUi(false);
         binding.progressDecodeLive.setVisibility(View.GONE);
 
-        // Perform final full pass over recorded audio
-        synchronized (streamPcm) {
-            if (streamWriteIndex > 44100) {
-                short[] recorded = new short[streamWriteIndex];
-                System.arraycopy(streamPcm, 0, recorded, 0, streamWriteIndex);
-                activePcmBuffer = recorded;
-                decodeOfflineBuffer(recorded);
+        if (!isRawMode) {
+            synchronized (streamPcm) {
+                if (streamWriteIndex > 44100) {
+                    short[] recorded = new short[streamWriteIndex];
+                    System.arraycopy(streamPcm, 0, recorded, 0, streamWriteIndex);
+                    activePcmBuffer = recorded;
+                    decodeOfflineBuffer(recorded);
+                }
             }
         }
     }
@@ -261,7 +314,7 @@ public class ReceiveFragment extends Fragment {
     private void onWavFilePicked(@Nullable Uri uri) {
         if (uri == null) return;
 
-        binding.tvDecodeMetrics.setText("Reading and decoding WAV file...");
+        binding.tvDecodeMetrics.setText("Reading and decoding audio file...");
         binding.progressDecodeLive.setVisibility(View.VISIBLE);
         binding.progressDecodeLive.setIndeterminate(true);
 
@@ -277,7 +330,7 @@ public class ReceiveFragment extends Fragment {
             } catch (Exception e) {
                 requireActivity().runOnUiThread(() -> {
                     binding.progressDecodeLive.setVisibility(View.GONE);
-                    binding.tvDecodeMetrics.setText("Failed to import WAV: " + e.getMessage());
+                    binding.tvDecodeMetrics.setText("Failed to import audio: " + e.getMessage());
                     Toast.makeText(requireContext(), "Import error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
                 });
             }
@@ -289,10 +342,52 @@ public class ReceiveFragment extends Fragment {
         binding.progressDecodeLive.setIndeterminate(false);
 
         executor.execute(() -> {
+            long startTime = System.currentTimeMillis();
+
+            // Check if Raw Mode is active OR if standard decode finds no VIS header
+            if (isRawMode) {
+                rawDecoder.clearCanvas();
+                rawDecoder.processChunk(pcm, 0, pcm.length);
+                Bitmap bmp = rawDecoder.getCanvasBitmap();
+                long duration = System.currentTimeMillis() - startTime;
+
+                requireActivity().runOnUiThread(() -> {
+                    lastDecodedBitmap = bmp;
+                    binding.ivDecodedImage.setImageBitmap(bmp);
+                    binding.progressDecodeLive.setVisibility(View.GONE);
+                    double audioSec = pcm.length / 44100.0;
+                    binding.tvDecodeMetrics.setText(String.format("Raw Mode: Decoded %.1fs in %d ms • %d frames completed",
+                            audioSec, duration, rawDecoder.getFrameCount() + 1));
+                    binding.tvTelemetryMode.setText("Mode: RAW (" + String.format("%.1f", rawDecoder.getLineDurationMs()) + "ms)");
+                });
+                return;
+            }
+
+            // Standard VIS-based decode
             SstvDecoder.DecodeResult res = decoder.decode(pcm, forcedMode, currentSlantOffset, (line, total, pixels, mode) -> {
                 int percent = (int) ((line / (float) total) * 100);
                 requireActivity().runOnUiThread(() -> binding.progressDecodeLive.setProgress(percent));
             });
+
+            // If no VIS header is detected in the audio (e.g. 1980s transmission), automatically
+            // fallback to Raw Mode to decode the full multi-frame signal without failure!
+            if (!res.visDetected && forcedMode == null && pcm.length > 44100 * 10) {
+                rawDecoder.clearCanvas();
+                rawDecoder.processChunk(pcm, 0, pcm.length);
+                Bitmap bmp = rawDecoder.getCanvasBitmap();
+                long duration = System.currentTimeMillis() - startTime;
+
+                requireActivity().runOnUiThread(() -> {
+                    lastDecodedBitmap = bmp;
+                    binding.ivDecodedImage.setImageBitmap(bmp);
+                    binding.progressDecodeLive.setVisibility(View.GONE);
+                    double audioSec = pcm.length / 44100.0;
+                    binding.tvDecodeMetrics.setText(String.format("Raw Fallback: Decoded %.1fs in %d ms • %d frames",
+                            audioSec, duration, rawDecoder.getFrameCount() + 1));
+                    binding.tvTelemetryMode.setText("Mode: RAW (Auto-Fallback)");
+                });
+                return;
+            }
 
             Bitmap bmp = res.toBitmap();
             requireActivity().runOnUiThread(() -> {
@@ -316,7 +411,7 @@ public class ReceiveFragment extends Fragment {
                 currentSlantOffset = (progress - 100) / 10.0;
                 binding.tvSlantVal.setText(String.format("%+.2f px/line", currentSlantOffset));
 
-                if (fromUser && activePcmBuffer != null) {
+                if (fromUser && activePcmBuffer != null && !isRawMode) {
                     decodeOfflineBuffer(activePcmBuffer);
                 }
             }
