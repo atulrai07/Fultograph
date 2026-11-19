@@ -163,36 +163,66 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Line Rate:"
+                android:text="Mode:"
                 android:textColor="@color/primary"
                 android:textSize="11sp"
                 android:textStyle="bold"
                 android:layout_marginEnd="6dp" />
 
-            <com.google.android.material.chip.ChipGroup
-                android:id="@+id/chip_group_raw_speed"
+            <HorizontalScrollView
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                app:singleSelection="true">
+                android:scrollbars="none">
 
-                <com.google.android.material.chip.Chip
-                    android:id="@+id/chip_raw_8s"
-                    style="@style/Widget.Material3.Chip.Filter"
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/chip_group_raw_speed"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:checked="true"
-                    android:text="8s (66.7ms)"
-                    android:textSize="10sp" />
+                    app:singleSelection="true">
 
-                <com.google.android.material.chip.Chip
-                    android:id="@+id/chip_raw_36s"
-                    style="@style/Widget.Material3.Chip.Filter"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="36s (150ms)"
-                    android:textSize="10sp" />
-            </com.google.android.material.chip.ChipGroup>
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chip_raw_auto_color"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true"
+                        android:text="Auto Color"
+                        android:textSize="10sp" />
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chip_raw_36s"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Robot 36 Color (150ms)"
+                        android:textSize="10sp" />
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chip_raw_martin"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Martin Color (RGB)"
+                        android:textSize="10sp" />
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chip_raw_scottie"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Scottie Color (RGB)"
+                        android:textSize="10sp" />
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chip_raw_8s"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Robot 8 B&amp;W (66.7ms)"
+                        android:textSize="10sp" />
+                </com.google.android.material.chip.ChipGroup>
+            </HorizontalScrollView>
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_scroll_bottom"

@@ -133,8 +133,8 @@ public class ReceiveFragment extends Fragment {
                 binding.cardDecodedImage.getLayoutParams().height = (int) (440 * density);
                 binding.cardDecodedImage.requestLayout();
                 binding.ivDecodedImage.setScaleType(android.widget.ImageView.ScaleType.FIT_XY);
-                binding.tvTelemetryMode.setText("Mode: RAW (Real-Time • " + String.format("%.1f", rawDecoder.getLineDurationMs()) + "ms)");
-                binding.tvDecodeMetrics.setText("Raw Mode active: Continuous scrollable feed. No time limit.");
+                binding.tvTelemetryMode.setText("Mode: RAW (" + rawDecoder.getColorMode().name() + " • Real-Time)");
+                binding.tvDecodeMetrics.setText("Raw Mode active: Continuous real-time color stream. No time limit.");
             } else {
                 // Specific SSTV mode
                 isRawMode = false;
@@ -161,15 +161,33 @@ public class ReceiveFragment extends Fragment {
             return false;
         });
 
-        binding.chipRaw8s.setOnClickListener(v -> {
-            rawDecoder.setConfiguration(RawSstvStreamDecoder.DEFAULT_WIDTH, RawSstvStreamDecoder.DEFAULT_HEIGHT, 66.667);
-            binding.tvTelemetryMode.setText("Mode: RAW (8s • 66.7ms)");
+        binding.chipRawAutoColor.setOnClickListener(v -> {
+            rawDecoder.setColorMode(RawSstvStreamDecoder.RawColorMode.AUTO);
+            binding.tvTelemetryMode.setText("Mode: RAW (Auto Color)");
             if (activePcmBuffer != null) decodeOfflineBuffer(activePcmBuffer);
         });
 
         binding.chipRaw36s.setOnClickListener(v -> {
-            rawDecoder.setConfiguration(RawSstvStreamDecoder.DEFAULT_WIDTH, RawSstvStreamDecoder.DEFAULT_HEIGHT, 150.0);
-            binding.tvTelemetryMode.setText("Mode: RAW (36s • 150ms)");
+            rawDecoder.setColorMode(RawSstvStreamDecoder.RawColorMode.ROBOT_36);
+            binding.tvTelemetryMode.setText("Mode: RAW (Robot 36 Color • 150ms)");
+            if (activePcmBuffer != null) decodeOfflineBuffer(activePcmBuffer);
+        });
+
+        binding.chipRawMartin.setOnClickListener(v -> {
+            rawDecoder.setColorMode(RawSstvStreamDecoder.RawColorMode.MARTIN);
+            binding.tvTelemetryMode.setText("Mode: RAW (Martin Color • RGB)");
+            if (activePcmBuffer != null) decodeOfflineBuffer(activePcmBuffer);
+        });
+
+        binding.chipRawScottie.setOnClickListener(v -> {
+            rawDecoder.setColorMode(RawSstvStreamDecoder.RawColorMode.SCOTTIE);
+            binding.tvTelemetryMode.setText("Mode: RAW (Scottie Color • RGB)");
+            if (activePcmBuffer != null) decodeOfflineBuffer(activePcmBuffer);
+        });
+
+        binding.chipRaw8s.setOnClickListener(v -> {
+            rawDecoder.setColorMode(RawSstvStreamDecoder.RawColorMode.ROBOT_8_BW);
+            binding.tvTelemetryMode.setText("Mode: RAW (Robot 8 B&W • 66.7ms)");
             if (activePcmBuffer != null) decodeOfflineBuffer(activePcmBuffer);
         });
 

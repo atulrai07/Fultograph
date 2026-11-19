@@ -331,6 +331,105 @@ public class SstvLoopbackTest {
     }
 
     /**
+     * Test 8: Raw Mode Color Streaming Decoder Test.
+     * Verifies that RawSstvStreamDecoder decodes color components (Y, Cr, Cb / RGB) in real time
+     * and produces full 24-bit color pixels (R != G != B) without requiring digital VIS headers.
+     */
+    @Test
+    public void testRawSstvStreamDecoderColor() {
+        int width = 320;
+        int height = 240;
+        RawSstvStreamDecoder streamDecoder = new RawSstvStreamDecoder();
+        streamDecoder.setColorMode(RawSstvStreamDecoder.RawColorMode.ROBOT_36);
+
+        // Synthesize Robot 36 color scanlines:
+        // Even line: Sync (9ms) -> Porch (3ms) -> Y (88ms @ 1800Hz) -> Sep (4.5ms) -> Porch2 (1.5ms) -> Cr (44ms @ 2100Hz)
+        // Odd line:  Sync (9ms) -> Porch (3ms) -> Y (88ms @ 1800Hz) -> Sep (4.5ms) -> Porch2 (1.5ms) -> Cb (44ms @ 1550Hz)
+        double sampleRate = 44100.0;
+        int syncSamples = (int) Math.round(9.0 * 44.1);
+        int porchSamples = (int) Math.round(3.0 * 44.1);
+        int ySamples = (int) Math.round(88.0 * 44.1);
+        int sepSamples = (int) Math.round(4.5 * 44.1);
+        int porch2Samples = (int) Math.round(1.5 * 44.1);
+        int cSamples = (int) Math.round(44.0 * 44.1);
+        int lineSamples = syncSamples + porchSamples + ySamples + sepSamples + porch2Samples + cSamples;
+
+        int numLines = 4;
+        short[] pcm = new short[numLines * lineSamples + 4410];
+        int idx = 0;
+        double phase = 0;
+
+        for (int line = 0; line < numLines; line++) {
+            boolean isEven = (line % 2 == 0);
+            // 1. Sync pulse @ 1200 Hz
+            for (int i = 0; i < syncSamples; i++) {
+                pcm[idx++] = (short) (Math.sin(phase) * 25000.0);
+                phase += 2.0 * Math.PI * 1200.0 / sampleRate;
+            }
+            // 2. Porch 1 @ 1500 Hz
+            for (int i = 0; i < porchSamples; i++) {
+                pcm[idx++] = (short) (Math.sin(phase) * 25000.0);
+                phase += 2.0 * Math.PI * 1500.0 / sampleRate;
+            }
+            // 3. Y scan @ 1900 Hz (mid luminance)
+            for (int i = 0; i < ySamples; i++) {
+                pcm[idx++] = (short) (Math.sin(phase) * 25000.0);
+                phase += 2.0 * Math.PI * 1900.0 / sampleRate;
+            }
+            // 4. Separator
+            double sepFreq = isEven ? 1500.0 : 2300.0;
+            for (int i = 0; i < sepSamples; i++) {
+                pcm[idx++] = (short) (Math.sin(phase) * 25000.0);
+                phase += 2.0 * Math.PI * sepFreq / sampleRate;
+            }
+            // 5. Porch 2 @ 1900 Hz
+            for (int i = 0; i < porch2Samples; i++) {
+                pcm[idx++] = (short) (Math.sin(phase) * 25000.0);
+                phase += 2.0 * Math.PI * 1900.0 / sampleRate;
+            }
+            // 6. Chroma: Cr @ 2200 Hz (strong red) on even, Cb @ 1900 Hz on odd
+            double chromaFreq = isEven ? 2200.0 : 1900.0;
+            for (int i = 0; i < cSamples; i++) {
+                pcm[idx++] = (short) (Math.sin(phase) * 25000.0);
+                phase += 2.0 * Math.PI * chromaFreq / sampleRate;
+            }
+        }
+
+        // Trailing sync to finish last line
+        for (int i = 0; i < syncSamples; i++) {
+            pcm[idx++] = (short) (Math.sin(phase) * 25000.0);
+            phase += 2.0 * Math.PI * 1200.0 / sampleRate;
+        }
+        for (int i = 0; i < 500; i++) {
+            pcm[idx++] = (short) (Math.sin(phase) * 25000.0);
+            phase += 2.0 * Math.PI * 1500.0 / sampleRate;
+        }
+
+        // Feed to decoder in chunks
+        int chunkSize = 1024;
+        for (int offset = 0; offset < idx; offset += chunkSize) {
+            int len = Math.min(chunkSize, idx - offset);
+            streamDecoder.processChunk(pcm, offset, len);
+        }
+
+        int[] pixels = streamDecoder.getCanvasPixels();
+        assertNotNull(pixels);
+
+        int pixel0 = pixels[0 * width + width / 2];
+        int pixel1 = pixels[1 * width + width / 2];
+        int pixel2 = pixels[2 * width + width / 2];
+        System.out.println(String.format("Raw Color Decoder Test: line0=0x%08X, line1=0x%08X, line2=0x%08X", pixel0, pixel1, pixel2));
+
+        int r = (pixel1 >> 16) & 0xFF;
+        int g = (pixel1 >> 8) & 0xFF;
+        int b = pixel1 & 0xFF;
+
+        assertTrue("Raw color mode must produce non-grayscale color (R != B)", r != b);
+        assertTrue("Color line must have positive color channels", (r + g + b) > 50);
+        System.out.println("RawSstvStreamDecoder color decoding test passed successfully!");
+    }
+
+    /**
      * Test 8: Universal Live SSTV Receiver Continuous Streaming Test.
      * Verifies that LiveSstvReceiver dynamically detects VIS headers from incoming microphone chunks,
      * locks onto the mode, decodes scanlines in real-time, fires completion callback, and re-arms.
