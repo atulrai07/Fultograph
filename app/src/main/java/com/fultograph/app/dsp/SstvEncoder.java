@@ -52,7 +52,8 @@ public class SstvEncoder {
         phase = 0.0;
 
         int headerSamples = 40131; // Exact header samples
-        int totalSamples = headerSamples + (height * mode.getLineSamples()) + 1000;
+        int numCycles = (mode.getColorFormat() == SstvMode.ColorFormat.YCRCB_PD) ? (height / 2) : height;
+        int totalSamples = headerSamples + 4000 + (numCycles * mode.getLineSamples()) + 5000;
 
         short[] pcm = new short[totalSamples];
         int writeIndex = 0;
@@ -60,11 +61,29 @@ public class SstvEncoder {
         // 1. Calibration Header & VIS Code Prefix
         writeIndex = writeCalibrationHeader(pcm, writeIndex, mode.getVisCode());
 
-        // 2. Scanline Encoding
-        if (mode == SstvMode.ROBOT_8_BW) {
-            writeIndex = encodeRobot8Bw(pixels, width, height, mode, pcm, writeIndex, listener);
-        } else {
-            writeIndex = encodeColorMode(pixels, width, height, mode, pcm, writeIndex, listener);
+        // 2. Scanline Encoding according to mode color format
+        switch (mode.getColorFormat()) {
+            case BW_Y:
+                writeIndex = encodeRobot8Bw(pixels, width, height, mode, pcm, writeIndex, listener);
+                break;
+            case YCRCB_LINE_ALT:
+                writeIndex = encodeColorMode(pixels, width, height, mode, pcm, writeIndex, listener);
+                break;
+            case YCRCB_ROBOT72:
+                writeIndex = encodeRobot72(pixels, width, height, mode, pcm, writeIndex, listener);
+                break;
+            case RGB_MARTIN:
+                writeIndex = encodeMartin(pixels, width, height, mode, pcm, writeIndex, listener);
+                break;
+            case RGB_SCOTTIE:
+                writeIndex = encodeScottie(pixels, width, height, mode, pcm, writeIndex, listener);
+                break;
+            case RGB_WRAASE:
+                writeIndex = encodeWraase(pixels, width, height, mode, pcm, writeIndex, listener);
+                break;
+            case YCRCB_PD:
+                writeIndex = encodePd(pixels, width, height, mode, pcm, writeIndex, listener);
+                break;
         }
 
         // Trim buffer to exact written samples
@@ -295,6 +314,324 @@ public class SstvEncoder {
             listener.onProgress(lineCount, lineCount);
         }
 
+        return offset;
+    }
+
+    /**
+     * Encodes Robot 72 Color (72s • 320×240):
+     * Each of the 240 lines transmits Y, Cr, and Cb in full:
+     * - Sync pulse: 9.0 ms @ 1200 Hz
+     * - Porch 1: 3.0 ms @ 1500 Hz
+     * - Y scan: 138.0 ms (320 px)
+     * - Separator 1: 4.5 ms @ 1500 Hz
+     * - Porch 2: 1.5 ms @ 1900 Hz
+     * - Cr scan: 69.0 ms (320 px)
+     * - Separator 2: 4.5 ms @ 2300 Hz
+     * - Porch 3: 1.5 ms @ 1900 Hz
+     * - Cb scan: 69.0 ms (320 px)
+     */
+    private int encodeRobot72(int[] pixels, int width, int height, SstvMode mode,
+                              short[] pcm, int offset, ProgressListener listener) {
+        int lineCount = mode.getHeight();
+        int pixelsPerLine = mode.getWidth();
+        int ySamples = mode.getYScanSamples();
+        int cSamples = mode.getCScanSamples();
+        int syncSamples = mode.getSyncSamples();
+        int porchSamples = mode.getPorchSamples();
+        int sepSamples = mode.getSeparatorSamples();
+        int porch2Samples = mode.getPorch2Samples();
+
+        int[] yRow = new int[pixelsPerLine];
+        int[] crRow = new int[pixelsPerLine];
+        int[] cbRow = new int[pixelsPerLine];
+
+        for (int y = 0; y < lineCount; y++) {
+            if (listener != null) listener.onProgress(y, lineCount);
+
+            int rowStart = y * width;
+            for (int x = 0; x < pixelsPerLine; x++) {
+                int argb = pixels[rowStart + x];
+                int r = (argb >> 16) & 0xFF;
+                int g = (argb >> 8) & 0xFF;
+                int b = argb & 0xFF;
+                yRow[x] = clamp((int) Math.round(0.299 * r + 0.587 * g + 0.114 * b));
+                crRow[x] = clamp((int) Math.round(128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b));
+                cbRow[x] = clamp((int) Math.round(128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b));
+            }
+
+            // 1. Sync pulse @ 1200 Hz
+            offset = writeToneSamples(pcm, offset, 1200.0, syncSamples);
+            // 2. Porch 1 @ 1500 Hz
+            offset = writeToneSamples(pcm, offset, 1500.0, porchSamples);
+            // 3. Y scan (138 ms)
+            offset = encodeScanlineChannel(pcm, offset, yRow, ySamples);
+            // 4. Separator 1 @ 1500 Hz
+            offset = writeToneSamples(pcm, offset, 1500.0, sepSamples);
+            // 5. Porch 2 @ 1900 Hz
+            offset = writeToneSamples(pcm, offset, 1900.0, porch2Samples);
+            // 6. Cr scan (69 ms)
+            offset = encodeScanlineChannel(pcm, offset, crRow, cSamples);
+            // 7. Separator 2 @ 2300 Hz
+            offset = writeToneSamples(pcm, offset, 2300.0, sepSamples);
+            // 8. Porch 3 @ 1900 Hz
+            offset = writeToneSamples(pcm, offset, 1900.0, porch2Samples);
+            // 9. Cb scan (69 ms)
+            offset = encodeScanlineChannel(pcm, offset, cbRow, cSamples);
+        }
+
+        if (listener != null) listener.onProgress(lineCount, lineCount);
+        return offset;
+    }
+
+    /**
+     * Encodes Martin 1 & Martin 2 Color (320×256):
+     * Each of the 256 lines:
+     * - Sync pulse: 4.8 ms @ 1200 Hz
+     * - Sync porch: 0.57 ms @ 1500 Hz
+     * - Green scan: yScanMs (320 px)
+     * - Separator 1: 0.57 ms @ 1500 Hz
+     * - Blue scan: yScanMs (320 px)
+     * - Separator 2: 0.57 ms @ 1500 Hz
+     * - Red scan: yScanMs (320 px)
+     * - Separator 3: 0.57 ms @ 1500 Hz
+     */
+    private int encodeMartin(int[] pixels, int width, int height, SstvMode mode,
+                             short[] pcm, int offset, ProgressListener listener) {
+        int lineCount = mode.getHeight();
+        int pixelsPerLine = mode.getWidth();
+        int chanSamples = mode.getYScanSamples();
+        int syncSamples = mode.getSyncSamples();
+        int porchSamples = mode.getPorchSamples();
+        int sepSamples = mode.getSeparatorSamples();
+
+        int[] gRow = new int[pixelsPerLine];
+        int[] bRow = new int[pixelsPerLine];
+        int[] rRow = new int[pixelsPerLine];
+
+        for (int y = 0; y < lineCount; y++) {
+            if (listener != null) listener.onProgress(y, lineCount);
+
+            int rowStart = y * width;
+            for (int x = 0; x < pixelsPerLine; x++) {
+                int argb = pixels[rowStart + x];
+                rRow[x] = (argb >> 16) & 0xFF;
+                gRow[x] = (argb >> 8) & 0xFF;
+                bRow[x] = argb & 0xFF;
+            }
+
+            // 1. Sync pulse @ 1200 Hz
+            offset = writeToneSamples(pcm, offset, 1200.0, syncSamples);
+            // 2. Sync porch @ 1500 Hz
+            offset = writeToneSamples(pcm, offset, 1500.0, porchSamples);
+            // 3. Green scan
+            offset = encodeScanlineChannel(pcm, offset, gRow, chanSamples);
+            // 4. Separator 1 @ 1500 Hz
+            offset = writeToneSamples(pcm, offset, 1500.0, sepSamples);
+            // 5. Blue scan
+            offset = encodeScanlineChannel(pcm, offset, bRow, chanSamples);
+            // 6. Separator 2 @ 1500 Hz
+            offset = writeToneSamples(pcm, offset, 1500.0, sepSamples);
+            // 7. Red scan
+            offset = encodeScanlineChannel(pcm, offset, rRow, chanSamples);
+            // 8. Separator 3 @ 1500 Hz
+            offset = writeToneSamples(pcm, offset, 1500.0, sepSamples);
+        }
+
+        if (listener != null) listener.onProgress(lineCount, lineCount);
+        return offset;
+    }
+
+    /**
+     * Encodes Scottie 1, Scottie 2, Scottie DX Color (320×256):
+     * Preceded by 9.0 ms starting sync pulse @ 1200 Hz before line 0.
+     * Each of the 256 lines:
+     * - Separator 1: 1.5 ms @ 1500 Hz
+     * - Green scan: yScanMs (320 px)
+     * - Separator 2: 1.5 ms @ 1500 Hz
+     * - Blue scan: yScanMs (320 px)
+     * - Interleaved sync pulse: 9.0 ms @ 1200 Hz
+     * - Sync porch: 1.5 ms @ 1500 Hz
+     * - Red scan: yScanMs (320 px)
+     */
+    private int encodeScottie(int[] pixels, int width, int height, SstvMode mode,
+                              short[] pcm, int offset, ProgressListener listener) {
+        int lineCount = mode.getHeight();
+        int pixelsPerLine = mode.getWidth();
+        int chanSamples = mode.getYScanSamples();
+        int syncSamples = mode.getSyncSamples();
+        int porchSamples = mode.getPorchSamples();
+        int sepSamples = mode.getSeparatorSamples();
+
+        int[] gRow = new int[pixelsPerLine];
+        int[] bRow = new int[pixelsPerLine];
+        int[] rRow = new int[pixelsPerLine];
+
+        // Preceded by starting sync: 9.0 ms @ 1200 Hz before line 0
+        int startingSyncSamples = (int) Math.round(9.0 * 44.1);
+        offset = writeToneSamples(pcm, offset, 1200.0, startingSyncSamples);
+
+        for (int y = 0; y < lineCount; y++) {
+            if (listener != null) listener.onProgress(y, lineCount);
+
+            int rowStart = y * width;
+            for (int x = 0; x < pixelsPerLine; x++) {
+                int argb = pixels[rowStart + x];
+                rRow[x] = (argb >> 16) & 0xFF;
+                gRow[x] = (argb >> 8) & 0xFF;
+                bRow[x] = argb & 0xFF;
+            }
+
+            // 1. Separator 1 @ 1500 Hz
+            offset = writeToneSamples(pcm, offset, 1500.0, sepSamples);
+            // 2. Green scan
+            offset = encodeScanlineChannel(pcm, offset, gRow, chanSamples);
+            // 3. Separator 2 @ 1500 Hz
+            offset = writeToneSamples(pcm, offset, 1500.0, sepSamples);
+            // 4. Blue scan
+            offset = encodeScanlineChannel(pcm, offset, bRow, chanSamples);
+            // 5. Interleaved sync pulse @ 1200 Hz
+            offset = writeToneSamples(pcm, offset, 1200.0, syncSamples);
+            // 6. Sync porch @ 1500 Hz
+            offset = writeToneSamples(pcm, offset, 1500.0, porchSamples);
+            // 7. Red scan
+            offset = encodeScanlineChannel(pcm, offset, rRow, chanSamples);
+        }
+
+        if (listener != null) listener.onProgress(lineCount, lineCount);
+        return offset;
+    }
+
+    /**
+     * Encodes Wraase SC2-120 Color (120s • 320×256):
+     * Each of the 256 lines:
+     * - Sync pulse: 5.52 ms @ 1200 Hz
+     * - Sync porch: 0.5 ms @ 1500 Hz
+     * - Red scan: 138.24 ms (320 px)
+     * - Green scan: 138.24 ms (320 px)
+     * - Blue scan: 138.24 ms (320 px)
+     */
+    private int encodeWraase(int[] pixels, int width, int height, SstvMode mode,
+                             short[] pcm, int offset, ProgressListener listener) {
+        int lineCount = mode.getHeight();
+        int pixelsPerLine = mode.getWidth();
+        int chanSamples = mode.getYScanSamples();
+        int syncSamples = mode.getSyncSamples();
+        int porchSamples = mode.getPorchSamples();
+
+        int[] rRow = new int[pixelsPerLine];
+        int[] gRow = new int[pixelsPerLine];
+        int[] bRow = new int[pixelsPerLine];
+
+        for (int y = 0; y < lineCount; y++) {
+            if (listener != null) listener.onProgress(y, lineCount);
+
+            int rowStart = y * width;
+            for (int x = 0; x < pixelsPerLine; x++) {
+                int argb = pixels[rowStart + x];
+                rRow[x] = (argb >> 16) & 0xFF;
+                gRow[x] = (argb >> 8) & 0xFF;
+                bRow[x] = argb & 0xFF;
+            }
+
+            // 1. Sync pulse @ 1200 Hz
+            offset = writeToneSamples(pcm, offset, 1200.0, syncSamples);
+            // 2. Sync porch @ 1500 Hz
+            offset = writeToneSamples(pcm, offset, 1500.0, porchSamples);
+            // 3. Red scan
+            offset = encodeScanlineChannel(pcm, offset, rRow, chanSamples);
+            // 4. Green scan
+            offset = encodeScanlineChannel(pcm, offset, gRow, chanSamples);
+            // 5. Blue scan
+            offset = encodeScanlineChannel(pcm, offset, bRow, chanSamples);
+        }
+
+        if (listener != null) listener.onProgress(lineCount, lineCount);
+        return offset;
+    }
+
+    /**
+     * Encodes PD 90 Color (90s • 320×256):
+     * 128 cycles transmitting 2 lines each (line 2k and 2k+1):
+     * - Sync pulse: 20.0 ms @ 1200 Hz
+     * - Sync porch: 2.08 ms @ 1500 Hz
+     * - Y0 scan: 91.52 ms (line 2k, 320 px)
+     * - Cr scan: 91.52 ms (averaged across 2k and 2k+1, 320 px)
+     * - Cb scan: 91.52 ms (averaged across 2k and 2k+1, 320 px)
+     * - Y1 scan: 91.52 ms (line 2k+1, 320 px)
+     */
+    private int encodePd(int[] pixels, int width, int height, SstvMode mode,
+                         short[] pcm, int offset, ProgressListener listener) {
+        int numCycles = height / 2;
+        int pixelsPerLine = mode.getWidth();
+        int subScanSamples = mode.getYScanSamples();
+        int syncSamples = mode.getSyncSamples();
+        int porchSamples = mode.getPorchSamples();
+
+        int[] y0Row = new int[pixelsPerLine];
+        int[] y1Row = new int[pixelsPerLine];
+        int[] crRow = new int[pixelsPerLine];
+        int[] cbRow = new int[pixelsPerLine];
+
+        for (int k = 0; k < numCycles; k++) {
+            if (listener != null) listener.onProgress(k * 2, height);
+
+            int row0Start = (2 * k) * width;
+            int row1Start = Math.min((2 * k + 1) * width, (height - 1) * width);
+
+            for (int x = 0; x < pixelsPerLine; x++) {
+                int argb0 = pixels[row0Start + x];
+                int r0 = (argb0 >> 16) & 0xFF;
+                int g0 = (argb0 >> 8) & 0xFF;
+                int b0 = argb0 & 0xFF;
+
+                int argb1 = pixels[row1Start + x];
+                int r1 = (argb1 >> 16) & 0xFF;
+                int g1 = (argb1 >> 8) & 0xFF;
+                int b1 = argb1 & 0xFF;
+
+                y0Row[x] = clamp((int) Math.round(0.299 * r0 + 0.587 * g0 + 0.114 * b0));
+                y1Row[x] = clamp((int) Math.round(0.299 * r1 + 0.587 * g1 + 0.114 * b1));
+
+                double rAvg = (r0 + r1) * 0.5;
+                double gAvg = (g0 + g1) * 0.5;
+                double bAvg = (b0 + b1) * 0.5;
+
+                crRow[x] = clamp((int) Math.round(128.0 + 0.5 * rAvg - 0.418688 * gAvg - 0.081312 * bAvg));
+                cbRow[x] = clamp((int) Math.round(128.0 - 0.168736 * rAvg - 0.331264 * gAvg + 0.5 * bAvg));
+            }
+
+            // 1. Sync pulse @ 1200 Hz (20 ms)
+            offset = writeToneSamples(pcm, offset, 1200.0, syncSamples);
+            // 2. Sync porch @ 1500 Hz (2.08 ms)
+            offset = writeToneSamples(pcm, offset, 1500.0, porchSamples);
+            // 3. Y0 scan (line 2k)
+            offset = encodeScanlineChannel(pcm, offset, y0Row, subScanSamples);
+            // 4. Cr scan (averaged)
+            offset = encodeScanlineChannel(pcm, offset, crRow, subScanSamples);
+            // 5. Cb scan (averaged)
+            offset = encodeScanlineChannel(pcm, offset, cbRow, subScanSamples);
+            // 6. Y1 scan (line 2k+1)
+            offset = encodeScanlineChannel(pcm, offset, y1Row, subScanSamples);
+        }
+
+        if (listener != null) listener.onProgress(height, height);
+        return offset;
+    }
+
+    /**
+     * Helper to encode an array of 0..255 pixel values over totalSamples using exact cumulative sample boundaries.
+     */
+    private int encodeScanlineChannel(short[] pcm, int offset, int[] values, int totalSamples) {
+        int len = values.length;
+        int prevSample = 0;
+        for (int x = 0; x < len; x++) {
+            int nextSample = (int) Math.round((double) (x + 1) * totalSamples / len);
+            int sampleCount = nextSample - prevSample;
+            prevSample = nextSample;
+
+            double freq = 1500.0 + (values[x] / 255.0) * 800.0;
+            offset = writeToneSamples(pcm, offset, freq, sampleCount);
+        }
         return offset;
     }
 

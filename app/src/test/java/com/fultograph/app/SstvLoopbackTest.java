@@ -166,6 +166,51 @@ public class SstvLoopbackTest {
         runColorLoopbackTest(SstvMode.ROBOT_36, 1000);
     }
 
+    /**
+     * Test 6b: ROBOT_72 Color (72s • 320×240) Loopback
+     * Full Y + Cr + Cb on every line.
+     */
+    @Test
+    public void testRobot72ColorLoopback() {
+        runColorLoopbackTest(SstvMode.ROBOT_72, 3000);
+    }
+
+    /**
+     * Test 6c: MARTIN_1 Color (114s • 320×256) Loopback
+     * Green + Blue + Red channels.
+     */
+    @Test
+    public void testMartin1ColorLoopback() {
+        runColorLoopbackTest(SstvMode.MARTIN_1, 3500);
+    }
+
+    /**
+     * Test 6d: SCOTTIE_1 Color (110s • 320×256) Loopback
+     * Green + Blue + Interleaved Sync + Red channels.
+     */
+    @Test
+    public void testScottie1ColorLoopback() {
+        runColorLoopbackTest(SstvMode.SCOTTIE_1, 3500);
+    }
+
+    /**
+     * Test 6e: SC2_120 Wraase Color (120s • 320×256) Loopback
+     * Red + Green + Blue channels.
+     */
+    @Test
+    public void testWraaseSc2Loopback() {
+        runColorLoopbackTest(SstvMode.SC2_120, 3500);
+    }
+
+    /**
+     * Test 6f: PD_90 Color (90s • 320×256) Loopback
+     * Y0 + Cr + Cb + Y1 2-line cycle.
+     */
+    @Test
+    public void testPd90ColorLoopback() {
+        runColorLoopbackTest(SstvMode.PD_90, 3500);
+    }
+
     private void runColorLoopbackTest(SstvMode mode, long maxExpectedDecodeTimeMs) {
         int width = mode.getWidth();
         int height = mode.getHeight();

@@ -223,7 +223,11 @@ public class LiveSstvReceiver {
                 if (lineSampleWriteIdx >= lineSamplesNeeded) {
                     decodeAndRenderCurrentLine();
                     lineSampleWriteIdx = 0;
-                    currentLine++;
+                    if (currentMode != null && currentMode.getColorFormat() == SstvMode.ColorFormat.YCRCB_PD) {
+                        currentLine += 2;
+                    } else {
+                        currentLine++;
+                    }
 
                     if (currentLine >= height) {
                         // Image completed!
@@ -379,7 +383,7 @@ public class LiveSstvReceiver {
                 canvasPixels[rowOffset + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
             }
         } else if (format == SstvMode.ColorFormat.YCRCB_PD) {
-            int k = currentLine;
+            int k = currentLine / 2;
             int y0Start = yStart;
             int crStart = y0Start + yScanTotalSamples;
             int cbStart = crStart + yScanTotalSamples;
